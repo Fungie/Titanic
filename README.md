@@ -1,0 +1,1 @@
+Titanic survival data is explored with the most important variables associated with survival were found with a random forest algorithm.
