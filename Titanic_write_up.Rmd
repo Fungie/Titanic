@@ -1,5 +1,28 @@
+---
+title: 'Exploring Titanic Data'
+author: 'Auren Ferguson'
+date: '02 January 2017'
+output:
+  html_document:
+    fig_height: 6
+    fig_width: 10
+    highlight: tango
+    number_sections: yes
+    theme: readable
+    toc: TRUE
+    keep_md: TRUE
+---
 
-# Libraries ----------------------------------------------------------------
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+This document explores Titanic data and finds the most important factors that influenced if a person survived or not. The data can be downloaded from <https://www.kaggle.com/c/titanic/data>.
+
+# Loading in Libraries and Data
+Firstly, we load in the libraries.
+```{r, message=FALSE}
 library(dplyr)
 library(ggplot2)
 library(data.table)
@@ -7,47 +30,59 @@ library(mice)
 library(randomForest)
 library(gridExtra)
 library(stringr)
+```
 
+Then the data is loaded in. There are two files, a train and test set. Since we will be doing some EDA and feature engineering it is easier to combine them into one data set but set a training and test flag so splitting up later on will be easier.
 
-# Reading data ------------------------------------------------------------
-# setting working directory
-setwd("~/Documents/Titanic")
-
-# reading training and test data
+```{r, message=FALSE}
 train <- as.tbl(fread(input = "./data/train.csv", na.strings = c("", " ")))
 test <- as.tbl(fread(input = "./data/test.csv", na.strings = c("", " ")))
 comb <- bind_rows("train" = train, "test" = test, .id = "originates")
+```
 
-# removing train and test
-rm(list = c("train", "test"))
-gc()
-  
+# Basic EDA
+Firstly, lets look at the data:
 
-# Basic EDA ---------------------------------------------------------------
+```{r}
+comb
+```
+
+Then get some basic stats:
+
+```{r}
 str(comb)
 summary(comb)
+```
 
-# dropping PassengerID
-#comb$PassengerId <- NULL
+It is also useful to see how many unique values and `NA` each variable has.
 
-# Checking how many uniques of each column
+```{r}
 sapply(comb, function (x) {length(unique(x))})
-
-# Number of NA's in each column
 sapply(comb, function(x) {sum(is.na(x))})
 
+```
 
-# Extracting titles from names ------------------------------------------------------------------
+There are lots of `Na` in `Survived`, this is due to the test data not having any `Survived` data. There are lots of missing values in `Age`, this is addressed below. There is also very little `Cabin` information but there isn't much that can be done about that, again see below.
+
+# Passenger Titles
+We have the names of all the passengers on board, we can extract their titles as it could be a good feature to determine who survived or not.
+
+```{r}
 comb$Title <- gsub('(.*, )|(\\..*)', '', comb$Name)
 table(comb$Title)
+```
 
-# reducing number of titles
+There are some very interesting titles here, such as: `Jonkheer` and `the Countess`. There are also some military titles. We can reduce the number of titles by combining some of them.
+
+```{r}
 military_titles <- c("Major", "Col", "Capt")
 unusual_titles <- c("Don", "Sir", "Mme", "Lady", "Mlle", "the Countess", "Jonkheer", "Dona")
 
 comb$Title <- ifelse(comb$Title %in% military_titles, "Military",
                          ifelse(comb$Title %in% unusual_titles, "Unusual Title", comb$Title))
+```
 
+```{r, echo=FALSE}
 ggplot(data = comb, aes(x = Title, fill = Title)) + 
   geom_bar() +
   guides(fill = FALSE) +
@@ -55,10 +90,12 @@ ggplot(data = comb, aes(x = Title, fill = Title)) +
   ggtitle("Titles of Titanic's Passengers") +
   theme(plot.title = element_text(hjust = 0.5))
 
+```
 
-# Age ---------------------------------------------------------------------
-# ____ Cleaining up Age Na's ----------------------------------------------
-# Make variables factors into factors
+# Age
+As we seen above, there are a lot `NA`'s in the `Age` column. We are going to use the `mice` package to use a random forest algorithm to impute the missing `Age` values in a smarter way than just median imputation.
+
+```{r, message=FALSE, results= "hide"}
 factor_vars <- c("Pclass", "Sex", "Ticket", "Cabin", "Embarked", "Title")
 
 comb[factor_vars] <- lapply(comb[factor_vars], as.factor)
@@ -68,10 +105,9 @@ mice_imputation_df <- comb[, !colnames(comb) %in% c('Name','Ticket','Cabin','Fam
 mice_imputation <- mice(data = mice_imputation_df, method='rf') 
 
 output <- complete(mice_imputation)
+```
 
-
-# ____ Visualising --------------------------------------------------------
-
+```{r, echo=FALSE}
 a <- bind_rows("Original" = comb, "Imputed" = output, .id = "Is_imputed")
 
 ggplot(a, aes(x = Age, fill = Is_imputed)) + 
@@ -80,19 +116,24 @@ ggplot(a, aes(x = Age, fill = Is_imputed)) +
   theme_bw() +
   theme(legend.position="bottom", plot.title = element_text(hjust = 0.5)) +
   theme(legend.title=element_blank())
-  
+```
 
+The imputation hasn't changed the `Age` distribution, so we will use this for imputing the `NA` values.
 
-# ____ Imputing ages into comb --------------------------------------------
+```{r}
 comb$Age <- output$Age
+```
 
+# Class Analysis
+The next step is to check the effect of class, how many people stayed in each section, the price of tickets, where people boarded the ship.
 
-# Embarked removing NA's --------------------------------------------------
-#comb$Embarked <- as.factor(ifelse(is.na(comb$Embarked), "C", comb$Embarked))
+We define a child as a person under the age of 16:
 
-# Class -------------------------------------------------------------------
+```{r}
 comb$Sex <- ifelse(comb$Age < 16, "child", as.character(comb$Sex))
+```
 
+```{r}
 class_stats <- comb %>% group_by(Pclass) %>% 
   summarise(number = n(), 
             av_fare = mean(Fare, na.rm = T),
@@ -104,6 +145,9 @@ class_stats <- comb %>% group_by(Pclass) %>%
            num_Queenstown = sum(na.omit(Embarked) == "Q"),
             num_Southampton = sum(na.omit(Embarked) == "S"))
 
+```
+
+```{r, echo= FALSE}
 a <- ggplot(data = class_stats, aes(x = Pclass, y = number)) + 
   geom_bar(stat = "identity", fill = "#ed1010", color = "black") +
   guides(fill = FALSE) +
@@ -177,60 +221,66 @@ i <- ggplot(data = class_stats, aes(x = Pclass, y = num_Southampton)) +
   xlab("Class") + ylab("Number")
 
 grid.arrange(a, b, c, d, e, f, g, h, i, ncol = 3, nrow = 3)
+```
 
+A lot of these results are somewhat obvious, with 3rd class passengers being the most populated group with the cheapest tickets. The majority of men and children are 3rd class passengers which probably means that they were emigrating to America for a new life. Cherbourg had the largest proportion of first class passengers while practically everyone in Queenstown (now called Cobh, Co. Cork, Ireland) were 3rd class passengers, implying that the Irish people on board were generally poor and probably emigrating.
 
+# Getting Cabin Level the Passengers Were Staying In
+While most of the `Cabin` data contains `NA`'s, it is possible to extract the level which the passengers were staying in. Maybe, the lower down you were the lower your chances of survival were?
 
-
-# Cabin -------------------------------------------------------------------
-# getting the level the person was staying on from Cabin
+```{r}
 comb$Cabin<- substr(comb$Cabin,1,1)
 comb <- rename(.data = comb, Level = Cabin)
 comb$Level <- addNA(comb$Level)
+```
 
+# Does Having a Family Help
+We will look at how many passengers were with their families.
 
-# Family size -------------------------------------------------------------
-
+```{r}
 comb <- comb %>% mutate(Family_size = 1 + SibSp + Parch) %>% select(-SibSp, -Parch)
+```
 
+```{r, echo=FALSE}
 ggplot(comb, aes(x = Family_size, fill = Pclass)) + 
   geom_histogram(binwidth = 1, alpha = 0.5, color = "black") +
   ggtitle("Family Size Distribution") + 
   theme_bw() +
   theme(legend.position="bottom", plot.title = element_text(hjust = 0.5)) 
-  #xlim(1, 11)
-  #theme(legend.title=element_blank())
+```
 
+There are lots of single people and a good few with small families, there are also some large families. We can make this variable into a factor variable with 3 levels: `single`, `small families`, `large families`.
+
+```{r}
 comb$Family_size <- as.factor(ifelse(comb$Family_size == 1, "single",
-                                     ifelse(comb$Family_size > 1 & comb$Family_size <= 4, "small family",
-                                            "large family")))
+                      ifelse(comb$Family_size > 1 & comb$Family_size <= 4, "small family",
+                             "large family")))
+```
 
+# Preparing Data for Model
+We have to prepare the data for modelling.
 
-
-
-
-
-# Fare --------------------------------------------------------------------
-filter(comb, is.na(Fare))
-comb$Fare <- ifelse(is.na(comb$Fare), 13.30, comb$Fare)
-
-# Preparing data for model ------------------------------------------------
-sapply(comb, class)
+```{r}
 factor_vars <- c("Sex", "Level", "Survived")
 
 comb[factor_vars] <- lapply(comb[factor_vars], as.factor)
+```
 
+# Splitting Data into Train and Test
 
-# Splitting up to train and test ------------------------------------------
-
+```{r}
 train <- comb %>% filter(originates == "train")
 test <- comb %>% filter(originates == "test")
+```
 
-
-
-# Random Forest Model -----------------------------------------------------
+# Random Forest Model for Finding Most Important Variables
+```{r, echo=FALSE}
 set.seed(1246)
 
-# ____ Formula ------------------------------------------------------------
+```
+
+## Model Formula
+```{r}
 rf_formula <- as.formula(Survived ~ Pclass +
                                     Sex +
                                     Age +
@@ -238,22 +288,31 @@ rf_formula <- as.formula(Survived ~ Pclass +
                                     Level +
                                     Title +
                                     Family_size)
+```
 
-# ____ Model --------------------------------------------------------------
+## Model
+```{r}
 rf_model <- randomForest(rf_formula,
                          data = train)
+```
 
-# ____ Plotting error -----------------------------------------------------
+## Plotting error
+```{r, echo=FALSE}
 plot(rf_model)
 legend('topright', colnames(rf_model$err.rate), col=1:3, fill=1:3)
+```
 
+## Finding Important Variables
+It's time to find the most predictive variables for `Survival`.
 
-# ____ Importance ---------------------------------------------------------
+```{r}
 rf_importance <- as.data.frame(importance(rf_model))
 rf_importance$variables <- row.names(rf_importance)
 rf_importance <- rf_importance %>% select(variables, MeanDecreaseGini) %>% arrange(desc(MeanDecreaseGini))
 row.names(rf_importance) <- NULL
+```
 
+```{r, echo= FALSE}
 ggplot(data = rf_importance, aes(x = reorder(variables, MeanDecreaseGini),  y = MeanDecreaseGini)) +
   geom_bar(stat = "identity", fill = "#4f7bbc", color = "black") +
   coord_flip() +
@@ -261,9 +320,7 @@ ggplot(data = rf_importance, aes(x = reorder(variables, MeanDecreaseGini),  y = 
   ggtitle("Important Variables") +
   theme(legend.position="bottom", plot.title = element_text(hjust = 0.5)) +  
   theme_bw()
+```
 
+It appears that `Title` is the most predictive variable, followed by `Sex`. These variables are linked so it's prob not necessary to have them both in a predictive model.
 
-# ____ Predict ------------------------------------------------------------
-test$Survived <- NULL
-  
-p <-  predict(rf_model, newdata = test)
